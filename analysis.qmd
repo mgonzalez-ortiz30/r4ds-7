@@ -1,0 +1,111 @@
+---
+title: "Crypto Markets"
+author: Melissa Gonzalez- Ortiz
+format: html
+execute:
+  echo: false
+---
+
+```{r}
+#| message: false
+library(tidyverse)
+library(arrow)
+```
+
+```{r}
+arrow::open_dataset("data/daily_prices.parquet") |> schema()
+```
+
+```{r}
+arrow::open_dataset("data/daily_prices.parquet") |>
+  filter(date_raw >= "2025-01-01") |>
+  group_by(coin_id) |>
+  summarise(average_market_cap = mean(market_cap_usd, na.rm = TRUE)) |>
+  arrange(desc(average_market_cap)) |>
+  collect()
+```
+
+```{r}
+#| cache: true
+prices <- read_parquet("data/daily_prices.parquet")
+metadata <- read_parquet("data/coin_metadata.parquet")
+categories <- read_parquet("data/categories.parquet")
+
+crypto <- prices |>
+  mutate(date = lubridate::ymd(date_raw)) |>
+  left_join(metadata, by = "coin_id") |>
+  left_join(
+    categories |> rename(category_description = description),
+    by = "category_id"
+  )
+```
+
+```{r}
+metadata <- metadata |>
+  mutate(
+    launch_date_parsed = coalesce(
+      lubridate::ymd(launch_date, quiet = TRUE),
+      lubridate::mdy(launch_date, quiet = TRUE)
+    )
+  )
+
+stopifnot(!anyNA(metadata$launch_date_parsed))
+
+metadata |>
+  arrange(launch_date_parsed) |>
+  select(coin_id, coin_name, launch_date, launch_date_parsed)
+```
+
+```{r}
+prices |>
+  filter(coin_id == "btc") |>
+  mutate(date = lubridate::ymd(date_raw)) |>
+  ggplot(aes(x = date, y = price_usd)) +
+  geom_line()
+```
+
+```{r}
+crypto |>
+  group_by(date, category_name) |>
+  summarise(category_market_cap = sum(market_cap_usd, na.rm = TRUE), .groups = "drop") |>
+  group_by(date) |>
+  mutate(category_share = category_market_cap / sum(category_market_cap)) |>
+  mutate(category_name = forcats::fct_reorder(category_name, category_share, .fun = mean, .desc = TRUE)) |>
+  ggplot(aes(x = date, y = category_share, fill = category_name)) +
+  geom_area() +
+  geom_rect(
+    data = tibble(
+      start = as.Date(c("2022-05-07", "2022-11-08")),
+      end = as.Date(c("2022-05-12", "2022-11-11"))
+    ),
+    aes(xmin = start, xmax = end, ymin = 0, ymax = 1),
+    inherit.aes = FALSE,
+    fill = "grey20",
+    alpha = 0.18
+  ) +
+  geom_label(
+    data = tibble(
+      date = as.Date(c("2022-05-09", "2022-11-09")),
+      event = c("Luna/UST crash", "FTX collapse")
+    ),
+    aes(x = date, y = 1.04, label = event),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  scale_fill_viridis_d(option = "cividis", name = "Category") +
+  scale_y_continuous(
+    labels = scales::label_percent(),
+    breaks = seq(0, 1, by = 0.25),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  coord_cartesian(ylim = c(0, 1.1), clip = "off") +
+  labs(
+    title = "Crypto Market Capitalization by Category",
+    subtitle = "Each band shows its category's share of tracked crypto market cap per day; bands sum to 100%.",
+    x = "Date",
+    y = "Share of total market cap",
+    caption = "Source: Daily prices, coin metadata, and category classifications from PPBDS misc.tutorials."
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
